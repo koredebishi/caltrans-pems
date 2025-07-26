@@ -45,6 +45,13 @@ cmake-build-*/
 # File-based project format
 *.iws
 
+# ignore any local downloads
+/data/
+*.csv
+*.txt.gz
+*.txt
+
+
 # IntelliJ
 out/
 
