@@ -53,7 +53,7 @@ class PeMSHandler(object):
 
         return DISTRICTS if districts[0] == 'all' else sorted(districts, key=int)
 
-    def get_files(self, start_year, end_year, districts, file_types, months=None):
+    def get_files(self, start_year, end_year, districts, file_types, months=None, days=None):
         """Return a list of available files for specific query."""
         # Storage for query responses
         files = list()
@@ -67,28 +67,47 @@ class PeMSHandler(object):
             response = self._open_url(url=url['url'])
             if response:
                 files.extend(self._collect_available_files(file_type=url['file_type'], district=url['district'],
-                                                           year=url['year'], response=response, months=months))
+                                                           year=url['year'], response=response, months=months, days=days))
             else:
                 self.log.info('No data available for filetype: {}, year: {}, '
                               'district: {}'.format(url['file_type'], url['year'], url['district']))
 
         return files
-
-    def _collect_available_files(self, file_type, district, year, response, months):
-        """Return a list of dicts containing file meta data for months."""
-        files = list()
+    
+    def _collect_available_files(self, file_type, district, year, response, months, days):
+        """Return a list of dicts containing file meta data for specific months and days."""
+        files = []
         available_months = self._get_available_months(response=response, months=months)
+
         for month in available_months:
-            for file in response['data'][month]:
-                files.append({'file_type': file_type,
-                              'district': district,
-                              'year': year,
-                              'month': month,
-                              'file_name': file['file_name'],
-                              'file_id': file['file_id'],
-                              'megabites': np.round(locale.atof(file['bytes']) / 10 ** 6, 1),
-                              'download_url': file['url']})
+            if 'data' in response and month in response['data']:
+                for file in response['data'][month]:
+                    if days:
+                        try:
+                            # Extract day from file_name, e.g., 'd04_text_station_5min_2025_01_01.txt.gz'
+                            day_str = file['file_name'].split('_')[-1].split('.')[0][-2:]
+                            if int(day_str) not in days:
+                                continue  # Skip file not in specified days
+                        except Exception as e:
+                            self.log.warning(f"Skipping file due to day parsing issue: {file['file_name']}")
+                            continue
+
+                    files.append({
+                        'file_type': file_type,
+                        'district': district,
+                        'year': year,
+                        'month': month,
+                        'day': int(day_str) if days else None,
+                        'file_name': file['file_name'],
+                        'file_id': file['file_id'],
+                        'megabites': np.round(locale.atof(file['bytes']) / 10 ** 6, 1),
+                        'download_url': file['url']
+                    })
         return files
+
+
+
+
 
     @staticmethod
     def _get_available_months(response, months):
@@ -96,6 +115,8 @@ class PeMSHandler(object):
         if months is None:
             return list(response['data'].keys())
         return [month for month in months if month in list(response['data'].keys())]
+    
+
 
     def _open_url(self, url):
         """Open clearing house url and return json of contents."""
@@ -125,14 +146,14 @@ class PeMSHandler(object):
             return pd.read_csv(os.path.join(save_path, 'saved_files.csv'))
         return pd.DataFrame()
 
-    def download_files(self, start_year, end_year, districts, file_types, months, save_path=None):
+    def download_files(self, start_year, end_year, districts, file_types, months=None, days=None, save_path=None):
         """Download all text files for user's query."""
         # Create data directory
         save_path = self._create_data_directory(save_path=save_path)
 
         # Get files to download
         files_to_download = self.get_files(start_year=start_year, end_year=end_year, districts=districts,
-                                           file_types=file_types, months=months)
+                                           file_types=file_types, months=months, days=days)
         files_to_download = pd.DataFrame(files_to_download )
 
         # Get existing files
@@ -147,7 +168,8 @@ class PeMSHandler(object):
                 success = self._download_file(file_name=row['file_name'],
                                               file_url=row['download_url'], save_path=save_path)
                 if success:
-                    files_downloaded.append(row, ignore_index=True)
+                    #files_downloaded.append(row, ignore_index=True)
+                    files_downloaded = pd.concat([files_downloaded, pd.DataFrame([row])], ignore_index=True)
                 time.sleep(5)
 
             # Save lookup csv
@@ -157,12 +179,21 @@ class PeMSHandler(object):
         else:
             self.log.info('No data available to download')
 
+    # @staticmethod
+    # def _check_for_new_files(files_to_download, files_downloaded):
+    #     """Check for files that have already been downloaded and remove them from download list."""
+    #     if files_downloaded.empty:
+    #         return files_to_download
+    #     return files_to_download[~files_to_download.isin(files_downloaded)].dropna()
+
     @staticmethod
     def _check_for_new_files(files_to_download, files_downloaded):
-        """Check for files that have already been downloaded and remove them from download list."""
+        """Return DataFrame of files that have not yet been downloaded, filtering only for matching file_name."""
         if files_downloaded.empty:
             return files_to_download
-        return files_to_download[~files_to_download.isin(files_downloaded)].dropna()
+        # Only filter based on file_name
+        return files_to_download[~files_to_download['file_name'].isin(files_downloaded['file_name'])]
+
 
     @staticmethod
     def _create_data_directory(save_path):
